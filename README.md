@@ -13,19 +13,4 @@ The configuration is very simple but get in touch if you need help.
 
 Be aware that, just like with the bgp_monitor tool, you need to edit the *.py file to set the BGP peer address.
 
-Example configuration file in JSON format:
-
-{
-"start_address" : "10.100.0.0",
-"netmask": 30, 
-"number_of_prefixes_to_inject": 235000,
-"path_attributes": 
-    {
-    "as-path": "65000 10 20 30",
-    "communities": "701:1 701:500 701:501",
-    "med": 100,
-    "next-hop": "10.10.1.2",
-    "origin": 1
-    }
-}
-
+Cheers!
