@@ -96,13 +96,15 @@ def DecodeBGP(msg):
         print(timestamp + " - " + "Received NOTIFICATION")
             
 
-def OpenBGP(conn):
+def OpenBGP(conn, config):
     
     #Build the BGP Message
     bgp_version = b'\x04'
-    bgp_as = struct.pack('!H',65001)
-    bgp_hold_time = struct.pack('!H',30)
-    bgp_identifier = struct.pack('!BBBB',10,10,1,1) 
+    bgp_as = struct.pack('!H',config["my_as"])
+    bgp_hold_time = struct.pack('!H',config["hold_time"])
+    
+    octet = config["bgp_identifier"].split('.')
+    bgp_identifier = struct.pack('!BBBB',int(octet[0]),int(octet[1]),int(octet[2]),int(octet[3]))
 
     bgp_opt_lenght = struct.pack('!B',0)
     
@@ -181,16 +183,19 @@ def DecodeIPv4Prefix(bytes):
 def EncodePathAttribute(type, value):
 
    
-    path_attributes = {"origin": [b'\x40', 1, 1], "as-path": [b'\x40', 2, 4], "next-hop": [b'\x40', 3, 4], "med": [b'\x80', 4, 4], "local_pref": [b'\x40', 5, 4], "communities": [b'\xc0', 8, 4]}
+    path_attributes = {"origin": [b'\x40', 1], "as-path": [b'\x40', 2], "next-hop": [b'\x40', 3], "med": [b'\x80', 4], "local_pref": [b'\x40', 5], "communities": [b'\xc0', 8]}
 
 
     attribute_flag = path_attributes[type][0]
     attribute_type_code = struct.pack('!B', int(path_attributes[type][1]))
-    attribute_length = struct.pack('!B', int(path_attributes[type][2]))
+
     if type == "origin":
         attribute_value = struct.pack('!B', 1)
     elif type == "as-path":
-        attribute_value = struct.pack('!BBH', 2, 1, value)
+        as_number_list = value.split(' ')
+        attribute_value = struct.pack('!BB', 2, len(as_number_list))
+        for as_number in as_number_list:
+            attribute_value += struct.pack('!H', int(as_number))
     elif type == "next-hop":
         octet = value.split('.')
         attribute_value = struct.pack('!BBBB',int(octet[0]),int(octet[1]),int(octet[2]),int(octet[3]))
@@ -199,8 +204,13 @@ def EncodePathAttribute(type, value):
     elif type == "local_pref":
         attribute_value = struct.pack('!I', value)
     elif type == "communities":
-        aux = value.split(':')
-        attribute_value = struct.pack('!HH', int(aux[0]), int(aux[1]))
+        communities_list = value.split(' ')
+        attribute_value = b''
+        for community in communities_list:
+            aux = community.split(":")
+            attribute_value += struct.pack('!HH', int(aux[0]), int(aux[1]))   
+    
+    attribute_length = struct.pack('!B', len(attribute_value))
     
     return attribute_flag + attribute_type_code + attribute_length + attribute_value  
 
@@ -243,7 +253,7 @@ def DecodePathAttribute(bytes):
        
     return path_attributes 
     
-def UpdateBGP(conn, bgp_mss, withdrawn_routes, nlri):
+def UpdateBGP(conn, bgp_mss, withdrawn_routes, path_attributes, nlri):
     
     #Build the BGP Message
     
@@ -269,8 +279,30 @@ def UpdateBGP(conn, bgp_mss, withdrawn_routes, nlri):
     bgp_total_path_attributes = b''
     
     if not max_length_reached:
-        bgp_total_path_attributes = EncodePathAttribute("origin", 1) + EncodePathAttribute("as-path", 65001)  + EncodePathAttribute("next-hop", "10.10.1.1") + EncodePathAttribute("med", 20) + EncodePathAttribute("local_pref", 150)
-        bgp_total_path_attributes = bgp_total_path_attributes + EncodePathAttribute("communities", "65111:222")
+        try:
+            bgp_total_path_attributes += EncodePathAttribute("origin", path_attributes["origin"])
+        except KeyError:
+            pass
+        try:
+            bgp_total_path_attributes += EncodePathAttribute("as-path", path_attributes["as-path"])
+        except KeyError:
+            pass
+        try:
+            bgp_total_path_attributes += EncodePathAttribute("next-hop", path_attributes["next-hop"])
+        except KeyError:
+            pass
+        try:
+            bgp_total_path_attributes += EncodePathAttribute("med", path_attributes["med"])
+        except KeyError:
+            pass
+        try:
+            bgp_total_path_attributes +=  EncodePathAttribute("local_pref", path_attributes["local_pref"])
+        except KeyError:
+            pass
+        try:
+            bgp_total_path_attributes += EncodePathAttribute("communities", path_attributes["communities"])
+        except KeyError:
+            pass
     
     bgp_total_path_attributes_length = struct.pack('!H',len(bgp_total_path_attributes))
     bgp_total_path_attributes = bgp_total_path_attributes_length + bgp_total_path_attributes
@@ -302,7 +334,7 @@ def UpdateBGP(conn, bgp_mss, withdrawn_routes, nlri):
     print(timestamp + " - " + "Sent UPDATE.")
     
     if len(withdrawn_routes) > 0 or len(nlri) > 0:#there are still BGP info to be updated that didn't fit this last Update message 
-        UpdateBGP(conn, bgp_mss, withdrawn_routes, nlri)
+        UpdateBGP(conn, bgp_mss, withdrawn_routes,path_attributes, nlri)
     
     return 0
     
@@ -341,7 +373,7 @@ if __name__ == '__main__':
     try:
         bgp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         bgp_socket.connect((BGP_PEER, BGP_PORT))   
-        OpenBGP(bgp_socket)
+        OpenBGP(bgp_socket, config)
         
     except TimeoutError:
         timestamp = str(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
@@ -353,7 +385,7 @@ if __name__ == '__main__':
     receive_worker.setDaemon(True)
     receive_worker.start()
     
-    keep_alive_worker = threading.Thread(target=KeepAliveThread, args=(bgp_socket,10,))#send keep alives every 10s
+    keep_alive_worker = threading.Thread(target=KeepAliveThread, args=(bgp_socket,(config["hold_time"])/3,))#send keep alives every 10s
     keep_alive_worker.setDaemon(True)
     keep_alive_worker.start()
     
@@ -362,6 +394,7 @@ if __name__ == '__main__':
 
     prefixes_to_withdraw = []            
     prefixes_to_advertise = []
+    path_attributes = config["path_attributes"]
     
     prefix_gen = prefix_generator(config["start_address"], config["netmask"])
     
@@ -370,7 +403,7 @@ if __name__ == '__main__':
         prefixes_to_advertise.append(prefix + "/" + str(config["netmask"]))
         
     time.sleep(3)
-    UpdateBGP(bgp_socket, BGP_MSS, prefixes_to_withdraw, prefixes_to_advertise)
+    UpdateBGP(bgp_socket, BGP_MSS, prefixes_to_withdraw, path_attributes, prefixes_to_advertise)
     
     try:
         while True:
@@ -379,7 +412,6 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         timestamp = str(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
         print(timestamp + " - " + "^C received, shutting down.")
-        api_server.socket.close()
         bgp_socket.close()
         exit()
         
